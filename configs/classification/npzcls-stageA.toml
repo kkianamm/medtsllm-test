@@ -1,0 +1,90 @@
+DEBUG = false
+
+# ===========================================================================
+# Stage A : text-prototype-aligned contrastive PRETRAINING (TEST)
+# Trains the TS-encoding stack (patch embed + reprogramming + projection)
+# so its embeddings land in the LLM's word-embedding space.
+# The LLM is loaded (for its word embeddings) but not forward-passed -> cheap.
+# Run:  python train.py configs/classification/npzcls-stageA.toml
+# ===========================================================================
+
+task = "classification"
+model = "medtsllm_test"
+
+history_len = 512      # MUST equal the window length L in your .npz files
+pred_len = 512         # keep == history_len
+
+
+[data]
+dataset = "npzcls"
+data_dir = "data/my_dataset"          # <-- dir containing train.npz / val.npz / test.npz
+mode = "multivariate"                 # use 'multivariate' even for 1 channel
+cols = "all"
+normalize = true
+description = "Physiological signals for classification."
+# n_classes = 5                       # optional; inferred from labels if omitted
+
+
+[training]
+stage = "pretrain"
+epochs = 30
+batch_size = 32
+optimizer = "adam"
+learning_rate = 1e-3
+dropout = 0.1
+loss = "ce"                           # unused in pretrain stage
+eval_metric = "align_loss"
+eval_metric_direction = "min"
+save_best = true
+
+
+[models.medtsllm]
+d_model = 32
+d_ff = 128
+n_heads = 8
+num_tokens = 1024
+covariate_mode = "interleave"         # any per-feature mode; NOT "concat" for Stage A
+embedding_downsample_mode = "linear"
+
+[models.medtsllm.patching]
+patch_len = 16
+stride = 8
+
+[models.medtsllm.prompting]
+dataset = true
+task = true
+clip = false
+input_stats = false
+examples = false
+input_stats_dim = 0
+input_stats_select = "all"
+
+[models.medtsllm.llm]
+enabled = true
+llm = "meta-llama/Llama-2-7b-hf"
+load_in_4bit = false
+load_in_8bit = false
+llm_layers = -1
+
+# ---- TEST alignment settings ----
+[models.medtsllm.test]
+n_prototypes = 64
+prototype_mode = "provided"           # "representative" | "random" | "provided"
+# clinical anchor words used when prototype_mode = "provided":
+prototype_words = "normal, arrhythmia, atrial fibrillation, ventricular, tachycardia, bradycardia, P wave, QRS complex, T wave, inspiration, expiration, apnea, artifact"
+soft_prompt_len = 8
+w_instance = 1.0                      # instance-wise contrast weight
+w_feature = 0.5                       # feature-wise contrast weight (0 if univariate)
+w_text = 1.0                          # text-prototype alignment weight
+proj_dim = 128                        # contrastive projection head dim (0/"" to disable)
+temperature = 0.1
+text_mode = "soft"                    # "soft" (TEST logsigmoid) | "ce"
+pooling = "mean"                      # classification pooling (used in Stage B)
+
+
+[setup]
+seed = 0
+device = "auto"
+dtype = "mixed"
+num_workers = "auto"
+logger = "print"                      # "wandb" | "tensorboard" | "print"

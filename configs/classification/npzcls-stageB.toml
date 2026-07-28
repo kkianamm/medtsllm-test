@@ -1,0 +1,101 @@
+DEBUG = false
+
+# ===========================================================================
+# Stage B : supervised CLASSIFICATION with the frozen (or LoRA) LLM.
+# Loss = cross-entropy + lambda_align * TEST-alignment (regulariser).
+# Loads the Stage-A checkpoint from training.pretrained_path.
+# Run:  python train.py configs/classification/npzcls-stageB.toml
+# ===========================================================================
+
+task = "classification"
+model = "medtsllm_test"
+
+history_len = 512      # MUST match Stage A / your window length
+pred_len = 512
+
+
+[data]
+dataset = "npzcls"
+data_dir = "data/my_dataset"
+mode = "multivariate"
+cols = "all"
+normalize = true
+description = "Physiological signals for classification."
+# n_classes = 5
+
+
+[training]
+stage = "classify"
+# path to the Stage-A best checkpoint (fill in the Stage-A run id):
+pretrained_path = "outputs/logs/<STAGE_A_RUN_ID>/checkpoints/best.pt"
+lambda_align = 0.1                    # 0.0 disables the alignment regulariser
+epochs = 20
+batch_size = 32
+optimizer = "adamw"
+learning_rate = 1e-4
+dropout = 0.1
+loss = "ce"
+eval_metric = "accuracy"             # "accuracy" | "f1_macro" | "auroc"
+eval_metric_direction = "max"
+save_best = true
+# class_weights = [1.0, 3.2, 2.5]    # optional: per-class CE weights for imbalance
+
+
+[models.medtsllm]
+d_model = 32
+d_ff = 128
+n_heads = 8
+num_tokens = 1024
+covariate_mode = "interleave"
+embedding_downsample_mode = "linear"
+
+[models.medtsllm.patching]
+patch_len = 16
+stride = 8
+
+[models.medtsllm.prompting]
+dataset = true
+task = true
+clip = false
+input_stats = true                    # patient/context stats help classification
+examples = false
+input_stats_dim = 0
+input_stats_select = "all"
+
+[models.medtsllm.llm]
+enabled = true
+llm = "meta-llama/Llama-2-7b-hf"
+load_in_4bit = false
+load_in_8bit = false
+llm_layers = -1
+
+# ---- optional: LoRA fine-tuning of the LLM (keep disabled for pure frozen) ----
+[models.medtsllm.lora]
+enabled = false
+layers = "auto"
+rank = 8
+alpha = 16
+dropout = 0.05
+rslora = true
+
+# ---- TEST settings (must match Stage A architecture: n_prototypes, proj_dim, soft_prompt_len) ----
+[models.medtsllm.test]
+n_prototypes = 64
+prototype_mode = "provided"
+prototype_words = "normal, arrhythmia, atrial fibrillation, ventricular, tachycardia, bradycardia, P wave, QRS complex, T wave, inspiration, expiration, apnea, artifact"
+soft_prompt_len = 8
+w_instance = 1.0
+w_feature = 0.5
+w_text = 1.0
+proj_dim = 128
+temperature = 0.1
+text_mode = "soft"
+pooling = "mean"
+
+
+[setup]
+seed = 0
+device = "auto"
+dtype = "mixed"
+num_workers = "auto"
+logger = "print"
