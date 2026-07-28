@@ -1,0 +1,98 @@
+--- models/medtsllm.py	2026-06-18 18:52:20.131831244 +0000
++++ models/medtsllm.py	2026-06-18 18:52:49.363104290 +0000
+@@ -23,7 +23,7 @@
+ 
+ class MedTsLLM(nn.Module):
+ 
+-    supported_tasks = ["forecasting", "reconstruction", "anomaly_detection", "semantic_segmentation", "segmentation", "pretraining"]
++    supported_tasks = ["forecasting", "reconstruction", "anomaly_detection", "semantic_segmentation", "segmentation", "classification", "pretraining"]
+     supported_modes = ["univariate", "multivariate"]
+ 
+     def __init__(self, config, dataset):
+@@ -64,9 +64,15 @@
+         elif self.task == "segmentation":
+             self.n_outputs_per_step = 1
+             assert self.config.tasks.segmentation.mode in ["boundary-prediction", "steps-to-boundary"]
++        elif self.task == "classification":
++            # Sequence-level prediction: one label for the whole window.
++            self.n_outputs_per_step = self.n_classes
+         else:
+             raise ValueError(f"Task {self.task} is not supported.")
+         self.n_outputs = self.n_outputs_per_step * self.pred_len
++        if self.task == "classification":
++            # Override: a single set of K logits per sequence (not per step).
++            self.n_outputs = self.n_classes
+ 
+         match self.covariate_mode:
+             case "univariate":
+@@ -257,6 +263,8 @@
+             elif self.task == "segmentation":
+                 if self.config.tasks.segmentation.mode == "boundary-prediction":
+                     pred = F.sigmoid(pred)
++            elif self.task == "classification":
++                pred = F.softmax(pred, dim=-1)
+ 
+         return pred
+ 
+@@ -364,7 +372,15 @@
+ 
+         # dec_out = dec_out[:, -self.n_patches:, :self.d_ff]
+         dec_out = dec_out.permute(0, 2, 1).contiguous() # [bs, d_ff, n_patches]
+-        dec_out = self.output_projection(dec_out)       # [bs, pred_len * n_features]
++        dec_out = self.output_projection(dec_out)       # [bs, pred_len * n_features]  (classification: [bs, n_classes])
++
++        if self.task == "classification":
++            if self.covariate_mode in ["independent", "merge-end"]:
++                raise NotImplementedError(
++                    "Classification currently supports the concat / interleave / weighted-average / add "
++                    "covariate modes (those that preserve the batch dimension)."
++                )
++            return dec_out  # [bs, n_classes]
+ 
+         if self.covariate_mode == "independent":
+             dec_out = dec_out.view(bs, self.n_features, self.pred_len, self.n_outputs_per_step)
+@@ -507,6 +523,8 @@
+             self.task_description = f"Classify the past {self.seq_len} steps of data as accurately as possible using the following information."
+         elif self.task == "segmentation":
+             self.task_description = f"Identify the change points in the past {self.seq_len} steps of data to segment the sequence."
++        elif self.task == "classification":
++            self.task_description = f"Classify the entire sequence of {self.seq_len} steps into one of the diagnostic classes using the following information."
+         else:
+             raise ValueError(f"Task {self.task} is not supported.")
+ 
+--- tasks/__init__.py	2026-06-18 18:52:20.140810491 +0000
++++ tasks/__init__.py	2026-06-18 18:52:57.609581891 +0000
+@@ -3,6 +3,7 @@
+ from .reconstruction import ReconstructionTask
+ from .segmentation import SegmentationTask
+ from .semantic_segmentation import SemanticSegmentationTask
++from .classification import ClassificationTask
+ from .pretraining import PretrainingTask
+ 
+ 
+@@ -12,6 +13,7 @@
+     "reconstruction": ReconstructionTask,
+     "segmentation": SegmentationTask,
+     "semantic_segmentation": SemanticSegmentationTask,
++    "classification": ClassificationTask,
+     "pretraining": PretrainingTask,
+ }
+ 
+--- datasets/__init__.py	2026-06-18 18:52:20.142422122 +0000
++++ datasets/__init__.py	2026-06-18 18:53:05.699812956 +0000
+@@ -6,6 +6,7 @@
+ from .bidmc import bidmc_datasets
+ from .ludb import ludb_datasets
+ from .dreams import dreams_datasets
++from .ptbxl import ptbxl_datasets
+ 
+ from .util import multi_2_uni_dataset
+ from .util import PretrainingDataset
+@@ -23,6 +24,7 @@
+     "bidmc": bidmc_datasets,
+     "ludb": ludb_datasets,
+     "dreams": dreams_datasets,
++    "PTB-XL": ptbxl_datasets,
+ }
+ 
+ def get_dataset(config, split):
